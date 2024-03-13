@@ -1,0 +1,642 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "applicationName": {
+        "type": "string",
+        "metadata": {
+            "description": "The choosen name of the application"
+        },
+        "defaultValue": "MyApp"
+      },
+      "adminUsername": {
+        "type": "string",
+        "metadata": {
+            "description": "The name of the admin user"
+        },
+        "defaultValue": "azureuser"
+      },
+      "sshKey": {
+        "type": "securestring",
+        "metadata": {
+            "description": "Your public ssh-key data"
+        }
+      },
+      "reverseProxyCustomData": {
+        "type": "string",
+        "metadata": {
+            "description": "Cloud Init data for the reverse proxy"
+        }
+      },
+      "appServerCustomData": {
+        "type": "string",
+        "metadata": {
+            "description": "Cloud Init data for the application server"
+        }
+      },
+      "mongoDbName": {
+        "type": "string",
+        "metadata": {
+            "description": "The name of the mongo database"
+        },
+        "defaultValue": "MyAppDB"
+      }
+    },
+    "functions": [],
+    "variables": {
+        "vnetName": "[concat(parameters('applicationName'), '-VNet')]", 
+        "subnetName": "[concat(parameters('applicationName'), '-DefaultSubnet')]", 
+        "nsgName": "[concat(variables('subnetName'), '-Nsg')]",
+        "bastionName": "[concat(parameters('applicationName'),'-Bastion')]",
+        "bastionIpName": "[concat(variables('bastionName'), '-PublicIp')]",
+        "bastionAsgName": "[concat(variables('bastionName'), '-Asg')]",
+        "bastionNicName": "[concat(variables('bastionName'), '-Nic')]",
+        "reverseProxyName": "[concat(parameters('applicationName'), '-ReverseProxy')]",
+        "reverseProxyIpName": "[concat(variables('reverseProxyName'), '-PublicIp')]",
+        "reverseProxyAsgName": "[concat(variables('reverseProxyName'), '-Asg')]",
+        "reverseProxyNicName": "[concat(variables('reverseProxyName'), '-Nic')]",
+        "appServerName": "[concat(parameters('applicationName'), '-AppServer')]",
+        "appServerAsgName": "[concat(variables('appServerName'), '-Asg')]",
+        "appServerNicName": "[concat(variables('appServerName'), '-Nic')]",
+        "osVersion": {
+            "offer": "0001-com-ubuntu-server-jammy",
+            "sku": "22_04-lts-gen2"
+        },
+        "vmSize": "Standard_B1s",
+        "cosmosDbAccoutName": "[toLower(concat(take(parameters('applicationName'), 15),'CosmosAcc'))]",
+        "blobStorageAccountName": "[toLower(concat(take(parameters('applicationName'), 17),'BlobAcc'))]",
+        "blobStorageContainerName": "images"
+    },
+    "resources": [
+        // Bastion ASG (application security group)
+        {
+            "name": "[variables('bastionAsgName')]",
+            "type": "Microsoft.Network/applicationSecurityGroups",
+            "apiVersion": "2023-04-01",
+            "location": "[resourceGroup().location]",
+            "tags": {},
+            "properties": {}
+        },
+        // Reverse Proxy ASG
+        {
+            "name": "[variables('reverseProxyAsgName')]",
+            "type": "Microsoft.Network/applicationSecurityGroups",
+            "apiVersion": "2023-04-01",
+            "location": "[resourceGroup().location]",
+            "tags": {},
+            "properties": {}
+        },
+        // App Server ASG
+        {
+            "name": "[variables('appServerAsgName')]",
+            "type": "Microsoft.Network/applicationSecurityGroups",
+            "apiVersion": "2023-04-01",
+            "location": "[resourceGroup().location]",
+            "tags": {},
+            "properties": {}
+        },
+        // Network Security Group
+        {
+            "name": "[variables('nsgName')]",
+            "type": "Microsoft.Network/networkSecurityGroups",
+            "apiVersion": "2023-04-01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/applicationSecurityGroups', variables('reverseProxyAsgName'))]",
+                "[resourceId('Microsoft.Network/applicationSecurityGroups', variables('appServerAsgName'))]",
+                "[resourceId('Microsoft.Network/applicationSecurityGroups', variables('bastionAsgName'))]"
+            ],
+            "properties": {
+                "securityRules": [
+                    // Inbound Allow SSH22 From Internet To Bastion ASG
+                    {
+                        "name": "InboundAllowSSH22FromInternetToBastion",
+                        "properties": {
+                            "description": "Allows ssh on port 22 to bastion host",
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "22",
+                            "sourceAddressPrefix": "Internet",
+                            "destinationApplicationSecurityGroups": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/applicationSecurityGroups', variables('bastionAsgName'))]"
+                                }
+                            ],
+                            "access": "Allow",
+                            "priority": 530,
+                            "direction": "Inbound"
+                        }
+                    },
+                    // Inbound Allow SSH22 From Bastion To Reverse Proxy and App Server ASG
+                    {
+                        "name": "InboundAllowSSH22FromBastionToReverseProxyandAppServerASG",
+                        "properties": {
+                            "description": "",
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "22",
+                            "sourceApplicationSecurityGroups": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/applicationSecurityGroups', variables('bastionAsgName'))]"
+                                }
+                            ],
+                            "destinationApplicationSecurityGroups": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/applicationSecurityGroups', variables('reverseProxyAsgName'))]"
+                                },
+                                {
+                                    "id": "[resourceId('Microsoft.Network/applicationSecurityGroups', variables('appServerAsgName'))]"
+                                }
+                            ],
+                            "access": "Allow",
+                            "priority": 540,
+                            "direction": "Inbound"
+                        }
+                    },
+                    // Inbound Allow HTTP80 From Internet To Reverse Proxy ASG
+                    {
+                        "name": "InboundAllowHTTP80FromInternetToReverseProxyASG",
+                        "properties": {
+                            "description": "",
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "80",
+                            "sourceAddressPrefix": "Internet",
+                            "destinationApplicationSecurityGroups": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/applicationSecurityGroups', variables('reverseProxyAsgName'))]"
+                                }
+                            ],
+                            "access": "Allow",
+                            "priority": 550,
+                            "direction": "Inbound"
+                        }
+                    },
+                    // Inbound Allow HTTP5000 From Reverse Proxy ASG to App Server ASG
+                    {
+                        "name": "InboundAllowHTTP5000FromReverseProxyASGtoAppServerASG",
+                        "properties": {
+                            "description": "",
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "5000",
+                            "sourceApplicationSecurityGroups": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/applicationSecurityGroups', variables('reverseProxyAsgName'))]"
+                                }
+                            ],
+                            "destinationApplicationSecurityGroups": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/applicationSecurityGroups', variables('appServerAsgName'))]"
+                                }
+                            ],
+                            "access": "Allow",
+                            "priority": 560,
+                            "direction": "Inbound"
+                        }
+                    },
+                    // Outbound Deny All SSH22 From Anywhere To Anywhere
+                    {
+                        "name": "OutboundDenyAllSSH22FromVNetToInternet",
+                        "properties": {
+                            "description": "",
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "22",
+                            "sourceAddressPrefix": "VirtualNetwork",
+                            "destinationAddressPrefix": "Internet",
+                            "access": "Deny",
+                            "priority": 800,
+                            "direction": "Outbound"
+                        }
+                    }
+                    // ,
+                    // // Outbound Deny All HTTP80 and HTTP5000 From Anywhere To Anywhere
+                    // {
+                    //     "name": "OutboundDenyAllHTTP80And5000FromVNetToInternet",
+                    //     "properties": {
+                    //         "description": "",
+                    //         "protocol": "Tcp",
+                    //         "sourcePortRange": "*",
+                    //         "destinationPortRanges": [
+                    //             "80",
+                    //             "5000"
+                    //         ],
+                    //         "sourceAddressPrefix": "VirtualNetwork",
+                    //         "destinationAddressPrefix": "Internet",
+                    //         "access": "Deny",
+                    //         "priority": 810,
+                    //         "direction": "Outbound"
+                    //     }
+                    // }
+                ]
+            }
+        },
+        // Virtual Network
+        {
+            "name": "[variables('vnetName')]",
+            "type": "Microsoft.Network/virtualNetworks",
+            "apiVersion": "2023-04-01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+            ],
+            "tags": {
+                "displayName": "[variables('vnetName')]"
+            },
+            "properties": {
+                "addressSpace": {
+                    "addressPrefixes": [
+                        "10.0.0.0/16"
+                    ]
+                },
+                "subnets": [
+                    {
+                        "name": "[variables('subnetName')]",
+                        "properties": {
+                            "addressPrefix": "10.0.0.0/24",
+                            "networkSecurityGroup": {
+                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        // Bastion public ip
+        {
+            "name": "[variables('bastionIpName')]",
+            "type": "Microsoft.Network/publicIPAddresses",
+            "apiVersion": "2023-04-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "displayName": "[variables('bastionIpName')]"
+            },
+            "properties": {
+                "publicIPAllocationMethod": "Dynamic"
+            }
+        },
+        // Reverse Proxy public IP
+        {
+            "name": "[variables('reverseProxyIpName')]",
+            "type": "Microsoft.Network/publicIPAddresses",
+            "apiVersion": "2023-04-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "displayName": "[variables('reverseProxyIpName')]"
+            },
+            "properties": {
+                "publicIPAllocationMethod": "Dynamic"
+            }
+        },
+        // Bastion network interface
+        {
+            "name": "[variables('bastionNicName')]",
+            "type": "Microsoft.Network/networkInterfaces",
+            "apiVersion": "2023-04-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "displayName": "[variables('bastionNicName')]"
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+                "[resourceId('Microsoft.Network/publicIPAddresses', variables('bastionIpName'))]"
+            ],
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipConfig1",
+                        "properties": {
+                            "privateIPAllocationMethod": "Dynamic",
+                            "publicIPAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('bastionIpName'))]"       
+                            },
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]"
+                            },
+                            "applicationSecurityGroups": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/applicationSecurityGroups',variables('bastionAsgName'))]"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        // Reverse Proxy network interface
+        {
+            "name": "[variables('reverseProxyNicName')]",
+            "type": "Microsoft.Network/networkInterfaces",
+            "apiVersion": "2023-04-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "displayName": "[variables('reverseProxyNicName')]"
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+                "[resourceId('Microsoft.Network/publicIPAddresses', variables('reverseProxyIpName'))]"
+            ],
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipConfig2",
+                        "properties": {
+                            "privateIPAllocationMethod": "Dynamic",
+                            "publicIPAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('reverseProxyIpName'))]"       
+                            },
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]"
+                            },
+                            "applicationSecurityGroups": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/applicationSecurityGroups',variables('reverseProxyAsgName'))]"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        // App Server network interface
+        {
+            "name": "[variables('appServerNicName')]",
+            "type": "Microsoft.Network/networkInterfaces",
+            "apiVersion": "2023-04-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "displayName": "[variables('appServerNicName')]"
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+                "[resourceId('Microsoft.Network/applicationSecurityGroups', variables('appServerAsgName'))]"
+            ],
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipConfig3",
+                        "properties": {
+                            "privateIPAllocationMethod":  "Static",
+                            "privateIPAddress": "10.0.0.10",
+                            "applicationSecurityGroups": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/applicationSecurityGroups',variables('appServerAsgName'))]"
+                                }
+                            ], 
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]"
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        // Bastion VM
+        {
+            "name": "[variables('bastionName')]",
+            "type": "Microsoft.Compute/virtualMachines",
+            "apiVersion": "2023-03-01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkInterfaces', variables('bastionNicName'))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+            ],
+            "tags": {
+                "displayName": "[variables('bastionName')]"
+            },
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "[variables('vmSize')]"
+                },
+                "osProfile": {
+                    "computerName": "[variables('bastionName')]",
+                    "adminUsername": "[parameters('adminUsername')]",
+                    "linuxConfiguration": {
+                        "disablePasswordAuthentication": true,
+                        "ssh": {
+                            "publicKeys": [
+                                {
+                                    "path": "[concat('/home/', parameters('adminUsername'), '/.ssh/authorized_keys')]",
+                                    "keyData": "[parameters('sshKey')]"
+                                }
+                            ]
+                        }
+                    }
+                },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "Canonical",
+                        "offer": "[variables('osVersion').offer]",
+                        "sku": "[variables('osVersion').sku]",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "name": "[concat(variables('bastionName'), '-OSDisk')]",
+                        "caching": "ReadWrite",
+                        "createOption": "FromImage"
+                    }
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('bastionNicName'))]"
+                        }
+                    ]
+                }
+            }
+        },
+        // Reverse Proxy VM
+        {
+            "name": "[variables('reverseProxyName')]",
+            "type": "Microsoft.Compute/virtualMachines",
+            "apiVersion": "2023-03-01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkInterfaces', variables('reverseProxyNicName'))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+            ],
+            "tags": {
+                "displayName": "[variables('reverseProxyName')]"
+            },
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "[variables('vmSize')]"
+                },
+                "osProfile": {
+                    "computerName": "[variables('reverseProxyName')]",
+                    "adminUsername": "[parameters('adminUsername')]",
+                    "linuxConfiguration": {
+                        "disablePasswordAuthentication": true,
+                        "ssh": {
+                            "publicKeys": [
+                                {
+                                    "path": "[concat('/home/', parameters('adminUsername'), '/.ssh/authorized_keys')]",
+                                    "keyData": "[parameters('sshKey')]"
+                                }
+                            ]
+                        }
+                    },
+                    "customData": "[base64(parameters('reverseProxyCustomData'))]"
+                },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "Canonical",
+                        "offer": "[variables('osVersion').offer]",
+                        "sku": "[variables('osVersion').sku]",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "name": "[concat(variables('reverseProxyName'), '-OSDisk')]",
+                        "caching": "ReadWrite",
+                        "createOption": "FromImage"
+                    }
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('reverseProxyNicName'))]"
+                        }
+                    ]
+                }
+            }
+        },
+        // App Server VM
+        {
+            "name": "[variables('appServerName')]",
+            "type": "Microsoft.Compute/virtualMachines",
+            "apiVersion": "2023-03-01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkInterfaces', variables('appServerNicName'))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+            ],
+            "tags": {
+                "displayName": "[variables('appServerName')]"
+            },
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "[variables('vmSize')]"
+                },
+                "osProfile": {
+                    "computerName": "[variables('appServerName')]",
+                    "adminUsername": "[parameters('adminUsername')]",
+                    "linuxConfiguration": {
+                        "disablePasswordAuthentication": true,
+                        "ssh": {
+                            "publicKeys": [
+                                {
+                                    "path": "[concat('/home/', parameters('adminUsername'), '/.ssh/authorized_keys')]",
+                                    "keyData": "[parameters('sshKey')]"
+                                }
+                            ]
+                        }
+                    },
+                    "customData": "[base64(parameters('appServerCustomData'))]"
+                },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "Canonical",
+                        "offer": "[variables('osVersion').offer]",
+                        "sku": "[variables('osVersion').sku]",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "name": "[concat(variables('appServerName'), '-OSDisk')]",
+                        "caching": "ReadWrite",
+                        "createOption": "FromImage"
+                    }
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('appServerNicName'))]"
+                        }
+                    ]
+                }
+            }
+        },
+        // Database Account Cosmos DB
+        {
+            "name": "[variables('cosmosDbAccoutName')]",
+            "type": "Microsoft.DocumentDB/databaseAccounts",
+            "apiVersion": "2023-04-15",
+            "location": "[resourceGroup().location]",
+            "tags": {},
+            "kind": "MongoDB",
+            "properties": {
+                "consistencyPolicy": {
+                    "defaultConsistencyLevel": "Eventual"
+                },
+                "locations": [
+                    {
+                        "locationName": "[resourceGroup().location]",
+                        "failoverPriority": 0,
+                        "isZoneRedundant": false
+                    }
+                ],
+                "enableFreeTier": true,
+                "databaseAccountOfferType": "Standard",
+                "enableAutomaticFailover": true
+            }
+        },
+        // Cosmos MongoDb
+        {
+            "name": "[format('{0}/{1}',variables('cosmosDbAccoutName'), parameters('mongoDbName'))]",
+            "type": "Microsoft.DocumentDB/databaseAccounts/mongodbDatabases",
+            "apiVersion": "2022-05-15",
+            "dependsOn": [
+                "[resourceId('Microsoft.DocumentDB/databaseAccounts/', variables('cosmosDbAccoutName'))]"
+            ],
+            "properties": {
+                "resource": {
+                    "id": "[parameters('mongoDbName')]"
+                },
+                "options": {}
+            }
+        },
+        // BlobStorage
+        {
+            "name": "[variables('blobStorageAccountName')]",
+            "type": "Microsoft.Storage/storageAccounts",
+            "apiVersion": "2023-01-01",
+            "tags": {
+                "displayName": "[variables('blobStorageAccountName')]"
+            },
+            "location": "[resourceGroup().location]",
+            "kind": "StorageV2",
+            "sku": {
+                "name": "Standard_LRS",
+                "tier": "Standard"
+            },
+            "properties": {
+                "accessTier": "Hot",
+                "supportsHttpsTrafficOnly": true,
+                "allowBlobPublicAccess": true
+            }
+        },
+        // Blob service
+        {
+            "type": "Microsoft.Storage/storageAccounts/blobServices",
+            "apiVersion": "2023-01-01",
+            "name": "[format('{0}/{1}', variables('blobStorageAccountName'), 'default')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts', variables('blobStorageAccountName'))]"
+            ]
+        },
+        // Blob 'container'
+        {
+            "name": "[format('{0}/{1}/{2}', variables('blobStorageAccountName'),'default', variables('blobStorageContainerName'))]",
+            "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+            "apiVersion": "2023-01-01",
+            "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('blobStorageAccountName'), 'default')]"
+            ],
+            "properties": {
+                "publicAccess": "Blob"
+            }
+        }
+    ],
+    "outputs": {
+    }
+}
