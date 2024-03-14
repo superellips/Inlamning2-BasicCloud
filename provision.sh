@@ -1,17 +1,17 @@
 #!/bin/bash
 
-rg_name="Test6RG"
+rg_name="TestRG"
+app_name="GithubActionsDemo"
+gh_user="superellips"
 
 # Ensure that the user is signed in with the GitHub CLI
 gh auth status || exit 1
 
 # Get the registration token for the deployment runner
-gh_user="superellips"
-gh_repo="GithubActionsDemo"
 gh_token_response=$(gh api --method POST \
   -H "Accept: application/vnd.github+json" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
-  repos/$gh_user/$gh_repo/actions/runners/registration-token)
+  repos/$gh_user/$app_name/actions/runners/registration-token)
 
 runner_token=$(echo $gh_token_response | jq -r '.token')
 
@@ -26,7 +26,7 @@ az group create --location swedencentral --name $rg_name
 az deployment group create \
   -g $rg_name -f deployment.json \
   --parameters \
-    applicationName=GithubActionsDemo \
+    applicationName=$app_name \
     sshKey="$(cat ~/.ssh/id_rsa.pub)" \
     reverseProxyCustomData=@cloud-init-reverse.sh \
     appServerCustomData=@cloud-init-app.sh
