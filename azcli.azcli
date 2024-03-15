@@ -1,6 +1,0 @@
-az group create --location swedencentral --name Test2RG
-az vm create -g Test2RG -n TestActionsVM --size Standard_B1s --image Ubuntu2204 --generate-ssh-keys --admin-username azureuser --custom-data @cloud-init-app.sh
-az vm open-port -g Test2RG -n TestActionsVM --port 5000
-
-
-az deployment group create -g Test2RG -f deployment.json --parameters applicationName=GithubActionsDemo sshKey=$(cat ~/.ssh/id_rsa.pub) reverseProxyCustomData=@cloud-init-reverse.sh appServerCustomData=@cloud-init-app.sh
