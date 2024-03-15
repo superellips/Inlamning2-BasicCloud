@@ -1,6 +1,6 @@
 #!/bin/bash
 
-app_name="GithubActionsDemo"
+app_name="CloToDo"
 app_port=5000
 
 # Install microsoft package repo and runtime
@@ -25,7 +25,7 @@ apt-get update -y && apt-get install -y aspnetcore-runtime-8.0
 # Write unit file
 cat << EOF > /etc/systemd/system/$app_name.service
 [Unit]
-Description=Erikas shiny new web application
+Description=A small example todo webapp
 
 [Service]
 WorkingDirectory=/opt/$app_name
@@ -35,9 +35,7 @@ RestartSec=10
 KillSignal=SIGINT
 SyslogIdentifier=$app_name
 User=www-data
-Environment=ASPNETCORE_ENVIRONMENT=Production
-Environment=DOTNET_NOLOGO=true
-Environment=ASPNETCORE_URLS="http://*:$app_port"
+EnvironmentFile=/etc/$app_name/$app_name.env
 
 [Install]
 WantedBy=multi-user.target

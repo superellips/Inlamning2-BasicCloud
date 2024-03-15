@@ -33,13 +33,6 @@
         "metadata": {
             "description": "Cloud Init data for the application server"
         }
-      },
-      "mongoDbName": {
-        "type": "string",
-        "metadata": {
-            "description": "The name of the mongo database"
-        },
-        "defaultValue": "MyAppDB"
       }
     },
     "functions": [],
@@ -63,8 +56,8 @@
             "sku": "22_04-lts-gen2"
         },
         "vmSize": "Standard_B1s",
-        "cosmosDbAccoutName": "[toLower(concat(take(parameters('applicationName'), 15),'CosmosAcc'))]",
-        "blobStorageAccountName": "[toLower(concat(take(parameters('applicationName'), 17),'BlobAcc'))]",
+        "cosmosDbAccoutName": "[toLower(concat('CosmosAcc', uniqueString(resourceGroup().id)))]",
+        "blobStorageAccountName": "[toLower(concat('BlobAcc', uniqueString(resourceGroup().id)))]",
         "blobStorageContainerName": "images"
     },
     "resources": [
@@ -210,25 +203,6 @@
                             "direction": "Outbound"
                         }
                     }
-                    // ,
-                    // // Outbound Deny All HTTP80 and HTTP5000 From Anywhere To Anywhere
-                    // {
-                    //     "name": "OutboundDenyAllHTTP80And5000FromVNetToInternet",
-                    //     "properties": {
-                    //         "description": "",
-                    //         "protocol": "Tcp",
-                    //         "sourcePortRange": "*",
-                    //         "destinationPortRanges": [
-                    //             "80",
-                    //             "5000"
-                    //         ],
-                    //         "sourceAddressPrefix": "VirtualNetwork",
-                    //         "destinationAddressPrefix": "Internet",
-                    //         "access": "Deny",
-                    //         "priority": 810,
-                    //         "direction": "Outbound"
-                    //     }
-                    // }
                 ]
             }
         },
@@ -300,7 +274,8 @@
             },
             "dependsOn": [
                 "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
-                "[resourceId('Microsoft.Network/publicIPAddresses', variables('bastionIpName'))]"
+                "[resourceId('Microsoft.Network/publicIPAddresses', variables('bastionIpName'))]",
+                "[resourceId('Microsoft.Network/applicationSecurityGroups',variables('bastionAsgName'))]"
             ],
             "properties": {
                 "ipConfigurations": [
@@ -335,7 +310,8 @@
             },
             "dependsOn": [
                 "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
-                "[resourceId('Microsoft.Network/publicIPAddresses', variables('reverseProxyIpName'))]"
+                "[resourceId('Microsoft.Network/publicIPAddresses', variables('reverseProxyIpName'))]",
+                "[resourceId('Microsoft.Network/applicationSecurityGroups',variables('reverseProxyAsgName'))]"
             ],
             "properties": {
                 "ipConfigurations": [
@@ -580,21 +556,6 @@
                 "enableAutomaticFailover": true
             }
         },
-        // Cosmos MongoDb
-        {
-            "name": "[format('{0}/{1}',variables('cosmosDbAccoutName'), parameters('mongoDbName'))]",
-            "type": "Microsoft.DocumentDB/databaseAccounts/mongodbDatabases",
-            "apiVersion": "2022-05-15",
-            "dependsOn": [
-                "[resourceId('Microsoft.DocumentDB/databaseAccounts/', variables('cosmosDbAccoutName'))]"
-            ],
-            "properties": {
-                "resource": {
-                    "id": "[parameters('mongoDbName')]"
-                },
-                "options": {}
-            }
-        },
         // BlobStorage
         {
             "name": "[variables('blobStorageAccountName')]",
@@ -638,5 +599,21 @@
         }
     ],
     "outputs": {
+        "cosmosDbAccoutName": {
+            "type": "string",
+            "value": "[variables('cosmosDbAccoutName')]"
+        },
+        "blobStorageAccountName": {
+            "type": "string",
+            "value": "[variables('blobStorageAccountName')]"
+        },
+        "blobStorageContainerName": {
+            "type": "string",
+            "value": "[variables('blobStorageContainerName')]"
+        },
+        "bastionName": {
+            "type": "string",
+            "value": "[variables('bastionName')]"
+        }
     }
 }
