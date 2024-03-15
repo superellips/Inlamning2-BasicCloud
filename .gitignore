@@ -6,6 +6,9 @@
 # Ignore my picture please
 infrastructure.JPG
 
+# Ignore the scrapbook too
+*.azcli
+
 # dotenv files
 .env
 
